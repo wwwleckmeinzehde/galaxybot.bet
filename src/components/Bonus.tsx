@@ -6,10 +6,10 @@ import { useGameStore } from '../store/useGameStore';
 export function DailyBonus() {
   const [isSpinning, setIsSpinning] = useState(false);
   const claimBonus = useGameStore((state) => state.claimBonus);
-  const lastBonusClaim = useGameStore((state) => state.lastBonusClaim);
-  // Fake cooldown: 1 minute for testing purposes, normally would be 24h
-  const canClaim = !lastBonusClaim || Date.now() - lastBonusClaim > 60000;
-  const handleClaim = () => {
+  const bonusReadyAt = useGameStore((state) => state.bonusReadyAt);
+  // Cooldown is enforced server-side; this is just to disable the button.
+  const canClaim = Date.now() >= bonusReadyAt;
+  const handleClaim = async () => {
     if (!canClaim) {
       toast.error('Bisschen gierig, oder?', {
         description: 'Warte eine Minute, bevor du um mehr Fake-Coins bettelst.'
@@ -17,15 +17,23 @@ export function DailyBonus() {
       return;
     }
     setIsSpinning(true);
-    setTimeout(() => {
-      setIsSpinning(false);
-      // Random small reward between 10 and 100
-      const reward = Math.floor(Math.random() * 90) + 10;
-      claimBonus(reward);
+    await new Promise((r) => setTimeout(r, 1800));
+    try {
+      const { reward } = await claimBonus();
       toast.success(`${reward} GC abgestaubt!`, {
         description: 'Verzock sie nicht alle in einer einzigen miesen Wette.'
       });
-    }, 2000);
+    } catch (err: any) {
+      if (err?.data?.error === 'cooldown') {
+        toast.error('Bisschen gierig, oder?', {
+          description: 'Warte eine Minute, bevor du um mehr Fake-Coins bettelst.'
+        });
+      } else {
+        toast.error('Stütze konnte nicht abgeholt werden. Typisch Amt.');
+      }
+    } finally {
+      setIsSpinning(false);
+    }
   };
   return (
     <section className="mx-auto max-w-5xl px-4 py-12 sm:px-6 lg:px-8">

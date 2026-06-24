@@ -1,8 +1,9 @@
 import React from 'react';
-import { Coins, ShieldAlert, Rocket, Info } from 'lucide-react';
+import { Coins, Rocket, User } from 'lucide-react';
 import { useGameStore } from '../store/useGameStore';
 export function TopBar() {
   const balance = useGameStore((state) => state.balance);
+  const name = useGameStore((state) => state.name);
   return (
     <header className="sticky top-0 z-50 w-full border-b border-space-700 bg-space-900/80 backdrop-blur-md">
       <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-4 sm:px-6 lg:px-8">
@@ -13,19 +14,20 @@ export function TopBar() {
           </span>
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="group relative hidden sm:flex items-center gap-1 text-xs text-slate-400 cursor-help">
-            <ShieldAlert className="h-4 w-4" />
-            <span>Beweisbar Fake</span>
-            <div className="absolute -bottom-10 right-0 hidden w-48 rounded bg-space-700 p-2 text-center text-xs text-white shadow-xl group-hover:block">
-              100 % Fake-Quoten. Kein echtes Geld. Reines Zocken.
-            </div>
+        <div className="flex items-center gap-3">
+          {name &&
+          <div
+            className="hidden items-center gap-1.5 rounded-full border border-space-700 bg-space-800 px-3 py-1.5 text-sm text-slate-300 sm:flex"
+            title="Dein zufälliger Zocker-Name">
+            <User className="h-4 w-4 text-slate-400" />
+            <span className="font-medium">{name}</span>
           </div>
+          }
 
           <div className="flex items-center gap-2 rounded-full border border-neon-gold/30 bg-space-800 px-3 py-1.5 shadow-[0_0_10px_rgba(255,215,0,0.1)]">
             <Coins className="h-4 w-4 text-neon-gold" />
             <span className="font-display font-bold text-neon-gold">
-              {Math.floor(balance).toLocaleString()} GC
+              {balance === null ? '…' : `${Math.floor(balance).toLocaleString()} GC`}
             </span>
           </div>
         </div>
@@ -73,22 +75,27 @@ export function Footer() {
             nichts zu gewinnen und nichts zu verlieren – außer Lebenszeit.
           </p>
 
-          <div className="flex items-center justify-center gap-4 pt-4 text-xs text-slate-500">
+          <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 pt-4 text-xs text-slate-500">
             <a
               href="https://wwwleckmeinzeh.de/impressum"
               target="_blank"
               rel="noopener noreferrer"
               className="underline-offset-2 transition-colors hover:text-neon-magenta hover:underline">
-              
+
               Impressum
             </a>
             <span className="text-slate-700">·</span>
             <a
-              href="https://wwwleckmeinzeh.de/impressum"
-              target="_blank"
-              rel="noopener noreferrer"
+              href="/agb"
               className="underline-offset-2 transition-colors hover:text-neon-magenta hover:underline">
-              
+
+              AGB
+            </a>
+            <span className="text-slate-700">·</span>
+            <a
+              href="/datenschutz"
+              className="underline-offset-2 transition-colors hover:text-neon-magenta hover:underline">
+
               Datenschutz
             </a>
           </div>
