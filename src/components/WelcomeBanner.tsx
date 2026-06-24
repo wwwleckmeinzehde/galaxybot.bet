@@ -1,8 +1,34 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Sparkles, ChefHat, AlertTriangle } from 'lucide-react';
+
+const CONSENT_KEY = 'galaxybot-consent';
+
+function hasConsent() {
+  try {
+    return localStorage.getItem(CONSENT_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 export function WelcomeBanner() {
-  const [open, setOpen] = useState(true);
+  // Show until the visitor accepts. Accepting = agreeing to AGB + Datenschutz.
+  const [open, setOpen] = useState(() => !hasConsent());
+
+  // "Ja" -> store consent so it doesn't nag again.
+  const accept = () => {
+    try {
+      localStorage.setItem(CONSENT_KEY, '1');
+    } catch {
+      /* ignore */
+    }
+    setOpen(false);
+  };
+
+  // X / backdrop -> dismiss for now, but no consent recorded (re-appears next visit).
+  const dismiss = () => setOpen(false);
+
   return (
     <AnimatePresence>
       {open &&
@@ -23,7 +49,7 @@ export function WelcomeBanner() {
         role="dialog"
         aria-modal="true"
         aria-labelledby="welcome-title"
-        onClick={() => setOpen(false)}>
+        onClick={dismiss}>
         
           <motion.div
           initial={{
@@ -50,10 +76,10 @@ export function WelcomeBanner() {
           className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-neon-magenta/30 bg-space-800 p-8 text-center shadow-[0_0_40px_rgba(255,0,255,0.15)]">
           
             <button
-            onClick={() => setOpen(false)}
+            onClick={dismiss}
             aria-label="Banner schließen"
             className="absolute right-4 top-4 rounded-full p-1.5 text-slate-400 transition-colors hover:bg-space-700 hover:text-white focus:outline-none focus:ring-2 focus:ring-neon-magenta">
-            
+
               <X className="h-5 w-5" />
             </button>
 
@@ -91,12 +117,31 @@ export function WelcomeBanner() {
             </div>
 
             <button
-            onClick={() => setOpen(false)}
+            onClick={accept}
             className="inline-flex items-center gap-2 rounded-lg bg-neon-magenta px-6 py-3 font-display text-sm font-bold text-white transition-all hover:bg-fuchsia-500 hover:shadow-[0_0_15px_rgba(255,0,255,0.4)] focus:outline-none focus:ring-2 focus:ring-neon-magenta focus:ring-offset-2 focus:ring-offset-space-800">
-            
+
               <Sparkles className="h-4 w-4" />
               Los geht's, ab in den Ruin
             </button>
+
+            <p className="mt-4 text-xs leading-relaxed text-slate-500">
+              Mit Klick auf „Los geht's" bestätigst du, dass du mindestens 18
+              bist und den{' '}
+              <a
+              href="/agb"
+              className="text-neon-magenta underline-offset-2 hover:underline">
+
+                AGB
+              </a>{' '}
+              und der{' '}
+              <a
+              href="/datenschutz"
+              className="text-neon-magenta underline-offset-2 hover:underline">
+
+                Datenschutzerklärung
+              </a>{' '}
+              zustimmst.
+            </p>
           </motion.div>
         </motion.div>
       }

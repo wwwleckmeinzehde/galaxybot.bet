@@ -2,7 +2,7 @@ import React from 'react';
 import { TopBar, Footer } from '../components/Layout';
 import { UptimeTicker } from '../components/Hero';
 import { BettingGrid } from '../components/Betting';
-import { LiveFeed, Leaderboard } from '../components/Social';
+import { Leaderboard } from '../components/Social';
 import { DailyBonus } from '../components/Bonus';
 import { WelcomeBanner } from '../components/WelcomeBanner';
 export function Home() {
@@ -16,11 +16,8 @@ export function Home() {
 
         <BettingGrid />
 
-        <section className="mx-auto max-w-5xl px-4 py-12 sm:px-6 lg:px-8">
-          <div className="grid gap-6 md:grid-cols-2">
-            <LiveFeed />
-            <Leaderboard />
-          </div>
+        <section className="mx-auto max-w-2xl px-4 py-12 sm:px-6 lg:px-8">
+          <Leaderboard />
         </section>
 
         <DailyBonus />
