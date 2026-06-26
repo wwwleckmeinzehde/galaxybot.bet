@@ -64,12 +64,22 @@ const INACTIVE_DAYS = 30;
 const INACTIVE_MS = INACTIVE_DAYS * 24 * 60 * 60 * 1000;
 
 const WORDS = [
-  'galaxy', 'blue', 'lobstar', 'hacker', 'gooner', 'troller',
+  'galaxy', 'blue', 'lobster', 'hacker', 'gooner', 'troller',
   'neon', 'turbo', 'cyber', 'mega', 'ultra', 'sigma', 'chad', 'based',
   'cringe', 'sus', 'degen', 'doomer', 'copium', 'hopium', 'rocket', 'moon',
   'void', 'cosmic', 'nova', 'phantom', 'shadow', 'goblin', 'gremlin', 'wizard',
   'ninja', 'pirate', 'demon', 'beast', 'savage', 'toxic', 'glitch', 'pixel',
   'vapor', 'laggy', 'sweaty', 'malding', 'tilted', 'noob', 'sussy', 'bonk',
+  'brain', 'rot', 'gig', 'chad', 'schizo', 'yap', 'npc', 'core',
+  'rizz', 'unrizz', 'low', 'high', 'fr', 'ngl', 'idc',
+  'touch', 'grass', 'ratio', 'mid', 'peak', 'aura', 'farm',
+  'ski', 'bidi', 'toil', 'grim', 'ohio', 'delu', 'buss',
+  'based', 'crack', 'lock', 'grind', 'doom', 'scroll',
+  'cope', 'hope', 'mal', 'seethe', 'post',
+  'disc', 'terminal', 'online', 'speed', 'min', 'max',
+  'loot', 'skin', 'walker', 'glitch', 'void', 'pilled',
+  'sigma', 'alpha', 'beta', 'omega', 'chat', 'ai', 'emote',
+  'clown', 'salt', 'tilt', 'larp'
 ];
 
 const cap = (w) => w.charAt(0).toUpperCase() + w.slice(1);
