@@ -87,17 +87,50 @@ const stmtInsertSession = db.prepare(`
   VALUES (@token, @name, @balance, @total_wagered, @total_won,
     @last_bonus, @server_seed, @server_seed_hash, @client_seed, @nonce, @created_at, @last_seen)
 `);
-const stmtUpdateSession = db.prepare(`
-  UPDATE sessions SET balance=@balance, total_wagered=@total_wagered, total_won=@total_won,
-    last_bonus=@last_bonus, nonce=@nonce, last_seen=@last_seen
-  WHERE token=@token
+const stmtUpsertSession = db.prepare(`
+  INSERT INTO sessions (token, name, balance, total_wagered, total_won,
+    last_bonus, server_seed, server_seed_hash, client_seed, nonce, created_at, last_seen)
+  VALUES (@token, @name, @balance, @total_wagered, @total_won,
+    @last_bonus, @server_seed, @server_seed_hash, @client_seed, @nonce, @created_at, @last_seen)
+  ON CONFLICT(token) DO UPDATE SET
+    balance=excluded.balance, total_wagered=excluded.total_wagered, total_won=excluded.total_won,
+    last_bonus=excluded.last_bonus, nonce=excluded.nonce, last_seen=excluded.last_seen
 `);
-const stmtTouchSession  = db.prepare('UPDATE sessions SET last_seen=? WHERE token=?');
 const stmtDeleteInactive = db.prepare('DELETE FROM sessions WHERE last_seen < ?');
 const stmtLeaderboard   = db.prepare(`
   SELECT token, name, balance FROM sessions WHERE total_wagered > 0
   ORDER BY (balance - 1000) DESC LIMIT 10
 `);
+
+// ---------------------------------------------------------------------------
+// In-memory write-back cache
+// Sessions are kept in RAM after first load; dirty entries are flushed to
+// SQLite every FLUSH_INTERVAL_MS. This avoids a DB write on every bet/bonus.
+// ---------------------------------------------------------------------------
+const FLUSH_INTERVAL_MS = 5_000;
+
+/** @type {Map<string, object>} token -> session object */
+const sessionCache = new Map();
+/** @type {Set<string>} tokens with unsaved changes */
+const dirtyTokens  = new Set();
+
+const flushDirty = db.transaction(() => {
+  for (const token of dirtyTokens) {
+    const s = sessionCache.get(token);
+    if (s) stmtUpsertSession.run(s);
+  }
+  dirtyTokens.clear();
+});
+
+function flush() {
+  if (dirtyTokens.size > 0) flushDirty();
+}
+
+setInterval(flush, FLUSH_INTERVAL_MS);
+
+// Flush on clean shutdown so no data is lost on SIGTERM/SIGINT.
+process.on('SIGTERM', () => { flush(); process.exit(0); });
+process.on('SIGINT',  () => { flush(); process.exit(0); });
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -123,6 +156,13 @@ function titleFor(profit) {
   return 'Liquidiert';
 }
 
+function loadSession(token) {
+  if (sessionCache.has(token)) return sessionCache.get(token);
+  const row = stmtGetSession.get(token);
+  if (row) sessionCache.set(token, row);
+  return row;
+}
+
 function createSession() {
   const serverSeed = crypto.randomBytes(32).toString('hex');
   const now = Date.now();
@@ -141,7 +181,13 @@ function createSession() {
     last_seen:        now,
   };
   stmtInsertSession.run(session);
+  sessionCache.set(session.token, session);
   return session;
+}
+
+function markDirty(session) {
+  session.last_seen = Date.now();
+  dirtyTokens.add(session.token);
 }
 
 function publicSession(s) {
@@ -177,22 +223,37 @@ function resolveRoll(session) {
 }
 
 function leaderboard() {
-  return stmtLeaderboard.all().map((row, i) => ({
-    rank:   i + 1,
-    name:   row.name,
-    token:  row.token,
-    profit: Math.floor(row.balance - STARTING_BALANCE),
-    title:  titleFor(Math.floor(row.balance - STARTING_BALANCE)),
-  }));
+  // Merge DB rows with in-memory cache so dirty (not-yet-flushed) values are reflected
+  const dbRows = stmtLeaderboard.all();
+  const rows = dbRows.map((r) => sessionCache.get(r.token) ?? r);
+  // Also include cached sessions not yet in DB leaderboard (new bettors not flushed yet)
+  for (const s of sessionCache.values()) {
+    if (s.total_wagered > 0 && !rows.find((r) => r.token === s.token)) rows.push(s);
+  }
+  return rows
+    .sort((a, b) => (b.balance - STARTING_BALANCE) - (a.balance - STARTING_BALANCE))
+    .slice(0, 10)
+    .map((row, i) => ({
+      rank:   i + 1,
+      name:   row.name,
+      token:  row.token,
+      profit: Math.floor(row.balance - STARTING_BALANCE),
+      title:  titleFor(Math.floor(row.balance - STARTING_BALANCE)),
+    }));
 }
 
 // ---------------------------------------------------------------------------
 // Cleanup: delete sessions inactive for 30 days (runs every 6 hours)
 // ---------------------------------------------------------------------------
 function runCleanup() {
+  flush(); // persist dirty entries before deleting
   const cutoff = Date.now() - INACTIVE_MS;
   const result = stmtDeleteInactive.run(cutoff);
   if (result.changes > 0) {
+    // Evict deleted sessions from the in-memory cache
+    for (const [token, s] of sessionCache) {
+      if (s.last_seen < cutoff) sessionCache.delete(token);
+    }
     console.log(`[cleanup] Deleted ${result.changes} inactive session(s) (>${INACTIVE_DAYS} days)`);
   }
 }
@@ -208,9 +269,9 @@ app.use(express.json());
 function getSession(req) {
   const token = req.get('x-galaxy-token') || req.body?.token;
   if (!token) return undefined;
-  const session = stmtGetSession.get(token);
-  if (session) stmtTouchSession.run(Date.now(), token);
-  return session || undefined;
+  const session = loadSession(token);
+  if (session) markDirty(session);
+  return session;
 }
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
@@ -261,15 +322,7 @@ app.post('/api/bet', (req, res) => {
     outcome = botUp ? 'loss' : 'down';
   }
 
-  stmtUpdateSession.run({
-    balance:       session.balance,
-    total_wagered: session.total_wagered,
-    total_won:     session.total_won,
-    last_bonus:    session.last_bonus,
-    nonce:         session.nonce,
-    last_seen:     Date.now(),
-    token:         session.token,
-  });
+  markDirty(session);
 
   res.json({
     outcome,
@@ -298,15 +351,7 @@ app.post('/api/bonus', (req, res) => {
   session.balance   += reward;
   session.last_bonus = now;
 
-  stmtUpdateSession.run({
-    balance:       session.balance,
-    total_wagered: session.total_wagered,
-    total_won:     session.total_won,
-    last_bonus:    session.last_bonus,
-    nonce:         session.nonce,
-    last_seen:     now,
-    token:         session.token,
-  });
+  markDirty(session);
 
   res.json({ reward, balance: Math.floor(session.balance), bonusReadyAt: now + BONUS_COOLDOWN_MS });
 });
