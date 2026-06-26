@@ -132,17 +132,6 @@ export function Agb() {
         </p>
       </Section>
 
-      <Section title="4b. Anti-Bot / IP-Limit">
-        <p>
-          Pro IP-Adresse sind maximal <strong>10 Konten</strong> gleichzeitig
-          zulässig. Wer versucht, massenhaft Accounts über eine IP anzulegen –
-          sei es manuell oder per Skript – erhält ab dem 11. Versuch einen
-          Fehler (HTTP 429). Das gilt auch für Shared NAT, VPN-Ausgangspunkte
-          und andere Szenarien, in denen mehrere Personen dieselbe öffentliche
-          IP nutzen. Falls du aus einem solchen Umfeld kommst und keinen Account
-          mehr erstellen kannst: Pech gehabt, das hier ist ein Witz-Projekt.
-        </p>
-      </Section>
 
       <Section title="5. Spielausgang & Fairness">
         <p>
@@ -240,11 +229,6 @@ export function Datenschutz() {
           sind: anonymes Token, generierter Name, GC-Stand, Wett-Zähler,
           Bonus-Zeitstempel, kryptografische Seeds (für die provably-fair
           Logik), Erstellungszeitpunkt und letzter Aktivitätszeitpunkt.
-        </p>
-        <p>
-          Zur Durchsetzung des IP-Limits wird außerdem die Zuordnung von
-          IP-Adresse zu Token gespeichert. Die IP wird nicht mit deiner Person
-          verknüpft und nicht an Dritte weitergegeben.
         </p>
         <p>
           Konten werden nach <strong>30 Tagen Inaktivität</strong> automatisch
