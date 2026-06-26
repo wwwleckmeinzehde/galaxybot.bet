@@ -59,7 +59,6 @@ const MARKET_BY_ID = new Map(MARKETS.map((m) => [m.id, m]));
 const STARTING_BALANCE = 1000;
 const BONUS_COOLDOWN_MS = 60_000;
 const BOT_UPTIME = 0.124;
-const MAX_SESSIONS_PER_IP = 10;
 const INACTIVE_DAYS = 30;
 const INACTIVE_MS = INACTIVE_DAYS * 24 * 60 * 60 * 1000;
 
@@ -90,7 +89,6 @@ const stmtUpdateSession = db.prepare(`
   WHERE token=@token
 `);
 const stmtTouchSession  = db.prepare('UPDATE sessions SET last_seen=? WHERE token=?');
-const stmtCountIP       = db.prepare('SELECT COUNT(*) as cnt FROM ip_sessions WHERE ip=?');
 const stmtInsertIP      = db.prepare('INSERT OR IGNORE INTO ip_sessions (ip, token) VALUES (?, ?)');
 const stmtDeleteInactive = db.prepare(`
   DELETE FROM sessions WHERE last_seen < ?
@@ -133,11 +131,6 @@ function getClientIP(req) {
 }
 
 function createSession(ip) {
-  const ipCount = stmtCountIP.get(ip);
-  if (ipCount.cnt >= MAX_SESSIONS_PER_IP) {
-    return { error: 'ip_limit' };
-  }
-
   const serverSeed = crypto.randomBytes(32).toString('hex');
   const now = Date.now();
   const session = {
@@ -156,7 +149,7 @@ function createSession(ip) {
   };
   stmtInsertSession.run(session);
   stmtInsertIP.run(ip, session.token);
-  return { session };
+  return session;
 }
 
 function publicSession(s) {
@@ -240,14 +233,8 @@ app.post('/api/session', (req, res) => {
   if (existing) return res.json(publicSession(existing));
 
   const ip = getClientIP(req);
-  const result = createSession(ip);
-  if (result.error === 'ip_limit') {
-    return res.status(429).json({
-      error: 'ip_limit',
-      message: `Maximal ${MAX_SESSIONS_PER_IP} Accounts pro IP-Adresse erlaubt.`,
-    });
-  }
-  res.json(publicSession(result.session));
+  const session = createSession(ip);
+  res.json(publicSession(session));
 });
 
 app.get('/api/me', (req, res) => {
