@@ -2,16 +2,49 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import express from 'express';
+
+const require = createRequire(import.meta.url);
+const Database = require('better-sqlite3');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.resolve(__dirname, '../dist');
+const DB_PATH = path.resolve(__dirname, '../storage.sqlite3');
 const PORT = process.env.PORT || 3000;
 
 // ---------------------------------------------------------------------------
-// Markets — server is the source of truth for probability & payout.
-// The client may read these for display, but it can NOT influence the outcome:
-// every bet is resolved here with a server-secret seed (see resolveRoll).
+// SQLite setup
+// ---------------------------------------------------------------------------
+const db = new Database(DB_PATH);
+db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS sessions (
+    token       TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    balance     REAL NOT NULL DEFAULT 1000,
+    total_wagered REAL NOT NULL DEFAULT 0,
+    total_won   REAL NOT NULL DEFAULT 0,
+    last_bonus  INTEGER,
+    server_seed TEXT NOT NULL,
+    server_seed_hash TEXT NOT NULL,
+    client_seed TEXT NOT NULL,
+    nonce       INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL,
+    last_seen   INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS ip_sessions (
+    ip    TEXT NOT NULL,
+    token TEXT NOT NULL,
+    PRIMARY KEY (ip, token)
+  );
+`);
+
+// ---------------------------------------------------------------------------
+// Markets
 // ---------------------------------------------------------------------------
 const MARKETS = [
   { id: 'm1', title: 'Überlebt galaxybot die nächsten 60 Sekunden?', odds: '-500', probability: 0.8, multiplier: 1.2, type: 'Ja/Nein' },
@@ -25,11 +58,11 @@ const MARKET_BY_ID = new Map(MARKETS.map((m) => [m.id, m]));
 
 const STARTING_BALANCE = 1000;
 const BONUS_COOLDOWN_MS = 60_000;
-const BOT_UPTIME = 0.124; // the running "12,4 % uptime" joke, now enforced server-side
+const BOT_UPTIME = 0.124;
+const MAX_SESSIONS_PER_IP = 10;
+const INACTIVE_DAYS = 30;
+const INACTIVE_MS = INACTIVE_DAYS * 24 * 60 * 60 * 1000;
 
-// Names are never user-chosen — they are generated from random 3-word combos
-// of this curated, safe pool. No moderation needed: you can't be racist with
-// "NeonGoonerGalaxy".
 const WORDS = [
   'galaxy', 'blue', 'lobstar', 'hacker', 'gooner', 'troller',
   'neon', 'turbo', 'cyber', 'mega', 'ultra', 'sigma', 'chad', 'based',
@@ -42,12 +75,37 @@ const WORDS = [
 const cap = (w) => w.charAt(0).toUpperCase() + w.slice(1);
 
 // ---------------------------------------------------------------------------
-// In-memory store ONLY. No database, no disk. A restart wipes everything.
+// Prepared statements
 // ---------------------------------------------------------------------------
-/** @type {Map<string, object>} token -> session */
-const sessions = new Map();
+const stmtGetSession    = db.prepare('SELECT * FROM sessions WHERE token = ?');
+const stmtInsertSession = db.prepare(`
+  INSERT INTO sessions (token, name, balance, total_wagered, total_won,
+    last_bonus, server_seed, server_seed_hash, client_seed, nonce, created_at, last_seen)
+  VALUES (@token, @name, @balance, @total_wagered, @total_won,
+    @last_bonus, @server_seed, @server_seed_hash, @client_seed, @nonce, @created_at, @last_seen)
+`);
+const stmtUpdateSession = db.prepare(`
+  UPDATE sessions SET balance=@balance, total_wagered=@total_wagered, total_won=@total_won,
+    last_bonus=@last_bonus, nonce=@nonce, last_seen=@last_seen
+  WHERE token=@token
+`);
+const stmtTouchSession  = db.prepare('UPDATE sessions SET last_seen=? WHERE token=?');
+const stmtCountIP       = db.prepare('SELECT COUNT(*) as cnt FROM ip_sessions WHERE ip=?');
+const stmtInsertIP      = db.prepare('INSERT OR IGNORE INTO ip_sessions (ip, token) VALUES (?, ?)');
+const stmtDeleteInactive = db.prepare(`
+  DELETE FROM sessions WHERE last_seen < ?
+`);
+const stmtDeleteInactiveIPs = db.prepare(`
+  DELETE FROM ip_sessions WHERE token NOT IN (SELECT token FROM sessions)
+`);
+const stmtLeaderboard   = db.prepare(`
+  SELECT token, name, balance FROM sessions WHERE total_wagered > 0
+  ORDER BY (balance - 1000) DESC LIMIT 10
+`);
 
-// Random 3-word combo, e.g. "NeonGoonerGalaxy" — three distinct words.
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 function randomName() {
   const pool = [...WORDS];
   const picked = [];
@@ -61,92 +119,101 @@ function randomName() {
 
 function titleFor(profit) {
   if (profit >= 1_000_000) return 'Galaxy-Hirn';
-  if (profit >= 100_000) return 'Walfänger';
-  if (profit > 0) return 'Glückspilz';
-  if (profit === 0) return 'Bei Null';
-  if (profit > -1_000) return 'Leicht angeschlagen';
-  if (profit > -100_000) return 'Amtlich am Boden';
+  if (profit >= 100_000)   return 'Walfänger';
+  if (profit > 0)          return 'Glückspilz';
+  if (profit === 0)        return 'Bei Null';
+  if (profit > -1_000)     return 'Leicht angeschlagen';
+  if (profit > -100_000)   return 'Amtlich am Boden';
   return 'Liquidiert';
 }
 
-function createSession() {
-  // Provably-fair seeds: the server seed stays secret until rotated/revealed,
-  // so a client can never compute a bet's outcome in advance.
-  const serverSeed = crypto.randomBytes(32).toString('hex');
-  const session = {
-    token: crypto.randomBytes(24).toString('hex'),
-    name: randomName(),
-    balance: STARTING_BALANCE,
-    totalWagered: 0,
-    totalWon: 0,
-    lastBonusClaim: null,
-    isBot: false,
-    serverSeed,
-    serverSeedHash: crypto.createHash('sha256').update(serverSeed).digest('hex'),
-    clientSeed: crypto.randomBytes(8).toString('hex'),
-    nonce: 0,
-    createdAt: Date.now(),
-  };
-  sessions.set(session.token, session);
-  return session;
+function getClientIP(req) {
+  const forwarded = req.get('x-forwarded-for');
+  return forwarded ? forwarded.split(',')[0].trim() : req.socket.remoteAddress;
 }
 
-// Public view — never leaks the secret serverSeed.
+function createSession(ip) {
+  const ipCount = stmtCountIP.get(ip);
+  if (ipCount.cnt >= MAX_SESSIONS_PER_IP) {
+    return { error: 'ip_limit' };
+  }
+
+  const serverSeed = crypto.randomBytes(32).toString('hex');
+  const now = Date.now();
+  const session = {
+    token:            crypto.randomBytes(24).toString('hex'),
+    name:             randomName(),
+    balance:          STARTING_BALANCE,
+    total_wagered:    0,
+    total_won:        0,
+    last_bonus:       null,
+    server_seed:      serverSeed,
+    server_seed_hash: crypto.createHash('sha256').update(serverSeed).digest('hex'),
+    client_seed:      crypto.randomBytes(8).toString('hex'),
+    nonce:            0,
+    created_at:       now,
+    last_seen:        now,
+  };
+  stmtInsertSession.run(session);
+  stmtInsertIP.run(ip, session.token);
+  return { session };
+}
+
 function publicSession(s) {
   return {
-    token: s.token,
-    name: s.name,
-    balance: Math.floor(s.balance),
-    totalWagered: s.totalWagered,
-    totalWon: s.totalWon,
-    lastBonusClaim: s.lastBonusClaim,
-    bonusReadyAt: s.lastBonusClaim ? s.lastBonusClaim + BONUS_COOLDOWN_MS : 0,
+    token:          s.token,
+    name:           s.name,
+    balance:        Math.floor(s.balance),
+    totalWagered:   s.total_wagered,
+    totalWon:       s.total_won,
+    lastBonusClaim: s.last_bonus,
+    bonusReadyAt:   s.last_bonus ? s.last_bonus + BONUS_COOLDOWN_MS : 0,
     fairness: {
-      serverSeedHash: s.serverSeedHash, // commitment; verify after a seed rotation
-      clientSeed: s.clientSeed,
-      nonce: s.nonce,
+      serverSeedHash: s.server_seed_hash,
+      clientSeed:     s.client_seed,
+      nonce:          s.nonce,
     },
   };
 }
 
-// Deterministic, unpredictable-to-client roll via HMAC(serverSeed, clientSeed:nonce).
-// Returns two independent floats in [0, 1).
 function resolveRoll(session) {
-  const message = `${session.clientSeed}:${session.nonce}`;
+  const message = `${session.client_seed}:${session.nonce}`;
   const digest = crypto
-    .createHmac('sha256', session.serverSeed)
+    .createHmac('sha256', session.server_seed)
     .update(message)
     .digest('hex');
   session.nonce += 1;
   const toFloat = (hex) => parseInt(hex, 16) / 0x100000000;
   return {
     uptimeRoll: toFloat(digest.slice(0, 8)),
-    winRoll: toFloat(digest.slice(8, 16)),
+    winRoll:    toFloat(digest.slice(8, 16)),
     digest,
   };
 }
 
-// A real leaderboard: only actual players who have placed at least one bet,
-// ranked by real profit. No seeded fake whales.
-function leaderboard(limit = 10) {
-  return [...sessions.values()]
-    .filter((s) => s.totalWagered > 0)
-    .map((s) => ({
-      name: s.name,
-      token: s.token,
-      profit: Math.floor(s.balance - STARTING_BALANCE),
-      balance: Math.floor(s.balance),
-    }))
-    .sort((a, b) => b.profit - a.profit)
-    .slice(0, limit)
-    .map((row, i) => ({
-      rank: i + 1,
-      name: row.name,
-      token: row.token,
-      profit: row.profit,
-      title: titleFor(row.profit),
-    }));
+function leaderboard() {
+  return stmtLeaderboard.all().map((row, i) => ({
+    rank:   i + 1,
+    name:   row.name,
+    token:  row.token,
+    profit: Math.floor(row.balance - STARTING_BALANCE),
+    title:  titleFor(Math.floor(row.balance - STARTING_BALANCE)),
+  }));
 }
+
+// ---------------------------------------------------------------------------
+// Cleanup: delete sessions inactive for 30 days (runs every 6 hours)
+// ---------------------------------------------------------------------------
+function runCleanup() {
+  const cutoff = Date.now() - INACTIVE_MS;
+  const result = stmtDeleteInactive.run(cutoff);
+  stmtDeleteInactiveIPs.run();
+  if (result.changes > 0) {
+    console.log(`[cleanup] Deleted ${result.changes} inactive session(s) (>${INACTIVE_DAYS} days)`);
+  }
+}
+runCleanup();
+setInterval(runCleanup, 6 * 60 * 60 * 1000);
 
 // ---------------------------------------------------------------------------
 // HTTP API
@@ -156,7 +223,10 @@ app.use(express.json());
 
 function getSession(req) {
   const token = req.get('x-galaxy-token') || req.body?.token;
-  return token ? sessions.get(token) : undefined;
+  if (!token) return undefined;
+  const session = stmtGetSession.get(token);
+  if (session) stmtTouchSession.run(Date.now(), token);
+  return session || undefined;
 }
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
@@ -165,11 +235,19 @@ app.get('/api/markets', (_req, res) => {
   res.json(MARKETS.map(({ id, title, odds, multiplier, type }) => ({ id, title, odds, multiplier, type })));
 });
 
-// First visit (or unknown/expired token after a restart) -> mint a fresh session.
 app.post('/api/session', (req, res) => {
   const existing = getSession(req);
-  const session = existing || createSession();
-  res.json(publicSession(session));
+  if (existing) return res.json(publicSession(existing));
+
+  const ip = getClientIP(req);
+  const result = createSession(ip);
+  if (result.error === 'ip_limit') {
+    return res.status(429).json({
+      error: 'ip_limit',
+      message: `Maximal ${MAX_SESSIONS_PER_IP} Accounts pro IP-Adresse erlaubt.`,
+    });
+  }
+  res.json(publicSession(result.session));
 });
 
 app.get('/api/me', (req, res) => {
@@ -182,56 +260,77 @@ app.post('/api/bet', (req, res) => {
   const session = getSession(req);
   if (!session) return res.status(401).json({ error: 'no_session' });
 
-  const stake = Math.floor(Number(req.body?.stake));
+  const stake  = Math.floor(Number(req.body?.stake));
   const market = MARKET_BY_ID.get(req.body?.marketId);
-  if (!market) return res.status(400).json({ error: 'unknown_market' });
-  if (!Number.isFinite(stake) || stake <= 0) return res.status(400).json({ error: 'invalid_stake' });
-  if (stake > session.balance) return res.status(400).json({ error: 'insufficient_funds', balance: Math.floor(session.balance) });
+  if (!market)                                       return res.status(400).json({ error: 'unknown_market' });
+  if (!Number.isFinite(stake) || stake <= 0)         return res.status(400).json({ error: 'invalid_stake' });
+  if (stake > session.balance)                       return res.status(400).json({ error: 'insufficient_funds', balance: Math.floor(session.balance) });
 
-  // Take the stake first.
-  session.balance -= stake;
-  session.totalWagered += stake;
+  session.balance       -= stake;
+  session.total_wagered += stake;
 
-  // Resolve with secret server randomness. The client cannot predict either roll.
   const { uptimeRoll, winRoll } = resolveRoll(session);
   const botUp = uptimeRoll < BOT_UPTIME;
-  const won = botUp && winRoll <= market.probability;
+  const won   = botUp && winRoll <= market.probability;
 
   let winnings = 0;
   let outcome;
   if (won) {
-    winnings = Math.floor(stake * market.multiplier);
+    winnings         = Math.floor(stake * market.multiplier);
     session.balance += winnings;
-    session.totalWon += winnings;
+    session.total_won += winnings;
     outcome = 'win';
   } else {
     outcome = botUp ? 'loss' : 'down';
   }
 
+  stmtUpdateSession.run({
+    balance:       session.balance,
+    total_wagered: session.total_wagered,
+    total_won:     session.total_won,
+    last_bonus:    session.last_bonus,
+    nonce:         session.nonce,
+    last_seen:     Date.now(),
+    token:         session.token,
+  });
+
   res.json({
-    outcome, // 'win' | 'loss' | 'down'
+    outcome,
     botUp,
     stake,
     winnings,
-    balance: Math.floor(session.balance),
-    nonce: session.nonce, // increments every bet — proof the roll was sequential
-    serverSeedHash: session.serverSeedHash,
+    balance:        Math.floor(session.balance),
+    nonce:          session.nonce,
+    serverSeedHash: session.server_seed_hash,
   });
 });
 
 app.post('/api/bonus', (req, res) => {
   const session = getSession(req);
   if (!session) return res.status(401).json({ error: 'no_session' });
+
   const now = Date.now();
-  if (session.lastBonusClaim && now - session.lastBonusClaim < BONUS_COOLDOWN_MS) {
+  if (session.last_bonus && now - session.last_bonus < BONUS_COOLDOWN_MS) {
     return res.status(429).json({
-      error: 'cooldown',
-      readyAt: session.lastBonusClaim + BONUS_COOLDOWN_MS,
+      error:   'cooldown',
+      readyAt: session.last_bonus + BONUS_COOLDOWN_MS,
     });
   }
-  const reward = crypto.randomInt(10, 100);
-  session.balance += reward;
-  session.lastBonusClaim = now;
+
+  const reward       = crypto.randomInt(10, 100);
+  session.balance   += reward;
+  session.last_bonus = now;
+
+  stmtUpdateSession.run({
+    balance:       session.balance,
+    total_wagered: session.total_wagered,
+    total_won:     session.total_won,
+    last_bonus:    session.last_bonus,
+    nonce:         session.nonce,
+    last_seen:     now,
+    token:         session.token,
+  });
+
   res.json({ reward, balance: Math.floor(session.balance), bonusReadyAt: now + BONUS_COOLDOWN_MS });
 });
 
@@ -240,7 +339,7 @@ app.get('/api/leaderboard', (req, res) => {
   res.json({ you: session?.token ?? null, leaders: leaderboard() });
 });
 
-// Static SPA + fallback (only matters in the Docker/prod build where dist exists).
+// Static SPA + fallback
 app.use(express.static(DIST_DIR));
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api/')) return next();
@@ -248,5 +347,5 @@ app.get('*', (req, res, next) => {
 });
 
 http.createServer(app).listen(PORT, () => {
-  console.log(`galaxybot.bet server listening on :${PORT}`);
+  console.log(`galaxybot.bet server listening on :${PORT} | DB: ${DB_PATH}`);
 });

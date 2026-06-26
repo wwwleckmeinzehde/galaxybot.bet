@@ -113,9 +113,34 @@ export function Agb() {
           ihn nicht selbst wählen, damit niemand auf dumme Ideen kommt.
         </p>
         <p>
-          Spielstände und Bestenlisten werden ausschließlich im
-          Arbeitsspeicher des Servers gehalten. Nach einem Server-Neustart sind
-          sie weg. Das ist keine Bug, das ist Feature.
+          Spielstände werden in einer lokalen SQLite-Datenbank auf dem Server
+          gespeichert und überleben damit Server-Neustarts.
+        </p>
+      </Section>
+
+      <Section title="4a. Automatische Konto-Löschung">
+        <p>
+          Konten, die <strong>30 Tage lang nicht genutzt</strong> wurden (kein
+          Login, keine Wette, kein Bonus-Claim), werden automatisch und
+          unwiderruflich gelöscht – inklusive GC-Stand und Bestenlisten-Platz.
+          Du wirst nicht benachrichtigt. Das Konto ist weg. Die Galaxy Coins
+          (die ohnehin wertlos sind) sind ebenfalls weg.
+        </p>
+        <p>
+          Zum Erhalt des Kontos reicht jede beliebige Interaktion mit der Seite
+          innerhalb des 30-Tage-Fensters.
+        </p>
+      </Section>
+
+      <Section title="4b. Anti-Bot / IP-Limit">
+        <p>
+          Pro IP-Adresse sind maximal <strong>10 Konten</strong> gleichzeitig
+          zulässig. Wer versucht, massenhaft Accounts über eine IP anzulegen –
+          sei es manuell oder per Skript – erhält ab dem 11. Versuch einen
+          Fehler (HTTP 429). Das gilt auch für Shared NAT, VPN-Ausgangspunkte
+          und andere Szenarien, in denen mehrere Personen dieselbe öffentliche
+          IP nutzen. Falls du aus einem solchen Umfeld kommst und keinen Account
+          mehr erstellen kannst: Pech gehabt, das hier ist ein Witz-Projekt.
         </p>
       </Section>
 
@@ -209,10 +234,22 @@ export function Datenschutz() {
 
       <Section title="4. Server & Spielstände">
         <p>
-          Dein anonymer Spielstand (GC-Saldo, Zähler, zufälliger Name) wird
-          ausschließlich flüchtig im Arbeitsspeicher des Servers gehalten,
-          niemals dauerhaft gespeichert und nach einem Server-Neustart
-          vollständig verworfen. Es gibt keine Datenbank.
+          Dein anonymer Spielstand (GC-Saldo, Zähler, zufälliger Name) wird in
+          einer <strong>lokalen SQLite-Datenbank</strong> auf dem Server
+          gespeichert (<code>storage.sqlite3</code>). Die gespeicherten Felder
+          sind: anonymes Token, generierter Name, GC-Stand, Wett-Zähler,
+          Bonus-Zeitstempel, kryptografische Seeds (für die provably-fair
+          Logik), Erstellungszeitpunkt und letzter Aktivitätszeitpunkt.
+        </p>
+        <p>
+          Zur Durchsetzung des IP-Limits wird außerdem die Zuordnung von
+          IP-Adresse zu Token gespeichert. Die IP wird nicht mit deiner Person
+          verknüpft und nicht an Dritte weitergegeben.
+        </p>
+        <p>
+          Konten werden nach <strong>30 Tagen Inaktivität</strong> automatisch
+          vollständig gelöscht (einschließlich IP-Zuordnung). Es werden keine
+          Backups der gelöschten Daten aufbewahrt.
         </p>
       </Section>
 
