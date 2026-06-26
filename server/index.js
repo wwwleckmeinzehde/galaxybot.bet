@@ -35,12 +35,6 @@ db.exec(`
     created_at  INTEGER NOT NULL,
     last_seen   INTEGER NOT NULL
   );
-
-  CREATE TABLE IF NOT EXISTS ip_sessions (
-    ip    TEXT NOT NULL,
-    token TEXT NOT NULL,
-    PRIMARY KEY (ip, token)
-  );
 `);
 
 // ---------------------------------------------------------------------------
@@ -99,13 +93,7 @@ const stmtUpdateSession = db.prepare(`
   WHERE token=@token
 `);
 const stmtTouchSession  = db.prepare('UPDATE sessions SET last_seen=? WHERE token=?');
-const stmtInsertIP      = db.prepare('INSERT OR IGNORE INTO ip_sessions (ip, token) VALUES (?, ?)');
-const stmtDeleteInactive = db.prepare(`
-  DELETE FROM sessions WHERE last_seen < ?
-`);
-const stmtDeleteInactiveIPs = db.prepare(`
-  DELETE FROM ip_sessions WHERE token NOT IN (SELECT token FROM sessions)
-`);
+const stmtDeleteInactive = db.prepare('DELETE FROM sessions WHERE last_seen < ?');
 const stmtLeaderboard   = db.prepare(`
   SELECT token, name, balance FROM sessions WHERE total_wagered > 0
   ORDER BY (balance - 1000) DESC LIMIT 10
@@ -135,12 +123,7 @@ function titleFor(profit) {
   return 'Liquidiert';
 }
 
-function getClientIP(req) {
-  const forwarded = req.get('x-forwarded-for');
-  return forwarded ? forwarded.split(',')[0].trim() : req.socket.remoteAddress;
-}
-
-function createSession(ip) {
+function createSession() {
   const serverSeed = crypto.randomBytes(32).toString('hex');
   const now = Date.now();
   const session = {
@@ -158,7 +141,6 @@ function createSession(ip) {
     last_seen:        now,
   };
   stmtInsertSession.run(session);
-  stmtInsertIP.run(ip, session.token);
   return session;
 }
 
@@ -210,7 +192,6 @@ function leaderboard() {
 function runCleanup() {
   const cutoff = Date.now() - INACTIVE_MS;
   const result = stmtDeleteInactive.run(cutoff);
-  stmtDeleteInactiveIPs.run();
   if (result.changes > 0) {
     console.log(`[cleanup] Deleted ${result.changes} inactive session(s) (>${INACTIVE_DAYS} days)`);
   }
@@ -242,8 +223,7 @@ app.post('/api/session', (req, res) => {
   const existing = getSession(req);
   if (existing) return res.json(publicSession(existing));
 
-  const ip = getClientIP(req);
-  const session = createSession(ip);
+  const session = createSession();
   res.json(publicSession(session));
 });
 
